@@ -1,0 +1,294 @@
+# Notes:
+# 1) Specifications by the user: Only the "source", "output", "suffix", "country_code_list" and "last_year" variables need to be changed
+# 2) Costs are expressed in millions, with one decimal place (see Steps 1, 2 and 3)
+# 3) The code removes measures for which "Current_status" = "Terminated" AND annual cost is 0 between 2015 and "last_year" AND end date is not after (or in) 2015 (see Step 5)
+# 4) To fill the Sources column, we use the first row of each measure in raw_data files (i.e., rows where "program" is not empty) (see Step 4)
+# 5) The structure of file names used in the code is in the form "country_code" followed by a "suffix". For example, "ITA" (country code) and "_raw_complete_data.xlsx" (suffix) (see Steps 0, 2, 3 and 4)
+# 6) It is assumed that the empty template file name is "SDG_template.xlsx". If it is not the case, please change the name in line 268 of the code.
+# 7) Also, it is assumed that the empty template file is found in the "source" (see line 19 of the code) path, that contains the input files.
+# 8) The code does not fill the SDG template if there are more than 750 measures (as the SDG template file contains 750 rows in which measures can be added). 
+#    If there are more than 750 measures, pasting in the template must be made manually. These files are identified by the mention "without_template" in their name.
+
+
+######################################################################################################################
+# STEP 0: Specifications by the user
+######################################################################################################################
+
+# Relevant paths
+setwd("H:/FOSSIL-FUEL SUBSIDIES REPORT/_Pilot Inventory to SDG/")
+source <- "H:/FOSSIL-FUEL SUBSIDIES REPORT/_Pilot Inventory to SDG/G20 Data/" # Path to the location of the input files
+output <- "H:/FOSSIL-FUEL SUBSIDIES REPORT/_Pilot Inventory to SDG/G20 Output Test/" # Path to the location of the output files
+
+# Suffix of the name of the raw data files (example: "_raw_complete_data.xlsx" in the complete file name "ITA_raw_complete_data.xlsx")
+suffix = "_inventory_v2.xlsx"
+
+# Countries list
+country_code_list = list("ARG","AUS","BRA","CAN", "CHN", "DEU","FRA","GBR","IDN","IND","ITA","JPN","KOR","MEX","RUS","TUR","USA","ZAF") # List of countries codes for which data is available
+
+# Last year
+last_year = 2021 #Year until which data is available
+
+######################################################################################################################
+# STEP 1: Preparation of necessary packages, variables and a function to round costs
+######################################################################################################################
+
+# Needed packages
+install.packages("openxlsx")
+install.packages("xlsx")
+install.packages("dplyr")
+install.packages("data.table")
+install.packages("xlsxjars")
+library(dplyr)
+library(readxl)
+library(data.table)
+library(openxlsx)
+library(xlsx)
+
+
+# Do not change the following values
+reference_year = 2020
+years_to_add = last_year - reference_year #Number of years to add
+
+# Function used to round costs converted to millions
+round_df <- function(df, digits) {
+  
+  nums <- vapply(df, is.numeric, FUN.VALUE = logical(1)) #To round numeric elements in the dataframe
+  df[,nums] <- round(df[,nums], digits = digits)
+  return(df)
+}
+
+######################################################################################################################
+# STEP 2: Extraction and preparation of the data from "Outlays"  
+######################################################################################################################
+
+extract_outlays <- function(country_code) {
+  
+  # Reading of the "Outlays" sheet
+  x <- read_excel(paste0(source,country_code,suffix), sheet = "Outlays")
+
+  # Removal of empty first rows
+  rel_rows = which(startsWith(x$program, country_code)) # Getting the row number of the first measure
+  begin = rel_rows[1] # Getting the row number of the first measure
+  if(begin>1){
+    x <- x[-c(1:begin-1), , drop = FALSE] # Removing the rows before the first measure
+  }
+  
+  # Conversion of the columns to the right type
+  x[c("start_date","end_date","state")] <- lapply(x[c("start_date","end_date","state")],as.character)
+  x[c("_2015","_2016","_2017","_2018","_2019","_2020")] <- lapply(x[c("_2015","_2016","_2017","_2018","_2019","_2020")],as.numeric)
+  
+  # Creation of the new data frame
+  y <- x[,c("program","program_desc","description","level","sources","status","start_date","end_date","fuel_cat","indicator","stage","incidence","comments","units","_2015","_2016","_2017","_2018","_2019","_2020")]
+  
+  # Addition of the column "Typology, Category"
+  y <- mutate(y, Typology_Category = "Direct transfer of funds")
+  y <- relocate(y, Typology_Category, .after = end_date)
+  
+  # Addition of the column "Typology, Sub-category"
+  y <- mutate(y, Typology_Sub_category = "DIRECT TRANSFER OF FUNDS - Direct spending")
+  y <- relocate(y, Typology_Sub_category, .after = Typology_Category)
+  
+  # Addition of years after 2020
+  if(years_to_add >= 1){
+    year = reference_year
+    for (i in 1:years_to_add){
+      year = year + 1
+      s <- paste0("_",year)
+      y["new_year"] <- x[,s, drop=FALSE]
+      y$"new_year" <- as.numeric(as.character(y$"new_year")) # Update of the new column type
+      y["new_year"] <- y["new_year"]/1e6 # Conversion to millions
+      str_year = toString(year) # Update of the new column name
+      colnames(y)[which(colnames(y) == "new_year")] <- str_year
+    }
+  }
+  
+  # Conversion of costs of the other columns to millions
+  y[c("_2015","_2016","_2017","_2018","_2019","_2020")] <- y[c("_2015","_2016","_2017","_2018","_2019","_2020")]/1e6
+  
+  # Rounding the result
+  y <- round_df(y,1)
+  
+  return(y)
+}
+
+######################################################################################################################
+# STEP 3: Extraction and preparation of the data from "Tax_expenditure"  
+######################################################################################################################
+
+extract_tax_expenditure <- function(country_code) {
+  
+  # Reading of the "Tax_expenditure" sheet
+  x_te <- read_excel(paste0(source,country_code,suffix), sheet = "Tax_expenditure")
+
+  # Removal of empty first rows
+  rel_rows_te = which(startsWith(x_te$program, country_code)) # Getting the row number of the first measure
+  begin_te = rel_rows_te[1] # Getting the row number of the first measure
+  if(begin_te>1){
+    x_te <- x_te[-c(1:begin_te-1), , drop = FALSE] # Removing the rows before the first measure
+  }
+  
+  # Conversion of the columns to the right type
+  x_te[c("start_date","end_date","state")] <- lapply(x_te[c("start_date","end_date","state")],as.character)
+  x_te[c("_2015","_2016","_2017","_2018","_2019","_2020")] <- lapply(x_te[c("_2015","_2016","_2017","_2018","_2019","_2020")],as.numeric)
+  
+  # Creation of the new data frame
+  y_te <- x_te[,c("program","program_desc","description","level","sources","status","start_date","end_date","fuel_cat","indicator","stage","incidence","comments","units","_2015","_2016","_2017","_2018","_2019","_2020")]
+  
+  # Addition of the column "Typology, Category"
+  y_te <- mutate(y_te, Typology_Category = "Tax expenditure")
+  y_te <- relocate(y_te, Typology_Category, .after = end_date)
+  
+  # Addition of the column "Typology, Sub-category"
+  y_te <- mutate(y_te, Typology_Sub_category = "TAX EXPENDITURES - Tax breaks and revenue foregone")
+  y_te <- relocate(y_te, Typology_Sub_category, .after = Typology_Category)
+  
+  # Addition of years after 2020
+  if(years_to_add>=1){
+    year = reference_year
+    for (i in 1:years_to_add){
+      year = year + 1
+      s <- paste0("_",year)
+      y_te["new_year"] <- x_te[,s, drop=FALSE]
+      y_te$"new_year" <- as.numeric(as.character(y_te$"new_year")) # Update of the new column type
+      y_te["new_year"] <- y_te["new_year"]/1e6 # Conversion to millions
+      str_year = toString(year) # Update of the new column name
+      colnames(y_te)[which(colnames(y_te) == "new_year")] <- str_year
+    }
+  }
+  
+  # Conversion of costs of the other columns to millions
+  y_te[c("_2015","_2016","_2017","_2018","_2019","_2020")] <- y_te[c("_2015","_2016","_2017","_2018","_2019","_2020")]/1e6
+  
+  # Rounding the values
+  y_te <- round_df(y_te,1)
+  
+  return(y_te)
+}
+
+######################################################################################################################
+# STEP 4: Concatenation of "Outlays" and "Tax_expenditure" and operations on several columns
+######################################################################################################################
+
+concatenate <- function(y,y_te){
+  
+  # Concatenation
+  z <- rbind(y,y_te)
+  
+  # Change of columns names
+  setnames(z, old = c("program","program_desc","description","level","sources","status","start_date","end_date","fuel_cat","indicator","stage","incidence","comments","units","_2015","_2016","_2017","_2018","_2019","_2020"), 
+           new = c("Program","Name_of_subsidy","Description_of_subsidy","Level","Sources","Current_status","Start_date","End_date","Fuel_sub_type","Recipients","Stage_of_support","Incidence","Comments","Currency","2015","2016","2017","2018","2019","2020"))
+  
+  # Modification of the column "Sources"
+  x_raw <- read_excel(paste0(source,country_code,suffix), sheet = "Raw_data") # Reading of the "Raw_data" sheet
+  relev_rows = which(startsWith(x_raw$program, country_code)) # Getting the row number of the first measure
+  beginning = relev_rows[1] # Getting the row number of the first measure
+  if(beginning>1){
+    x_raw <- x_raw[-c(1:beginning-1), , drop = FALSE] # Removing the rows before the first measure
+  }
+  x_raw <- x_raw[!is.na(x_raw$program), , drop = FALSE] # Removing the rows where "program" is empty to get one line per measure
+  x_raw <- mutate(x_raw, Updated_Sources = paste0("Source:", x_raw$sources, "\n", "Notes:", x_raw$Notes, "\n", "SpecLink:", x_raw$SpecLink, "\n", "GenLink:", x_raw$GenLink, "\n", "Page:", x_raw$Page, "\n", "ID:", x_raw$ID, "\n", "Native_name:", x_raw$native_name)) # Preparation of the content of the column Sources
+  if(nrow(z)>=1){
+    for (k in 1:nrow(z)){ # The goal of the loop is to get the corresponding value of Sources for each row in z
+      finder = match(z$Program[k],x_raw$program)
+      z$Sources[k] = x_raw$Updated_Sources[finder]
+    }
+  }
+  
+  # Addition of the column "Fuel type"
+  z <- mutate(z, Fuel_type = 
+                ifelse(Fuel_sub_type == "ANTCOAL" | Fuel_sub_type == "BITCOAL" | Fuel_sub_type == "BKB" | Fuel_sub_type == "BROWN" | Fuel_sub_type == "Coal Mining" | Fuel_sub_type == "COALTAR" | Fuel_sub_type == "COKCOAL" | Fuel_sub_type == "GASCOKE" | Fuel_sub_type == "HARDCOAL" | Fuel_sub_type == "LIGNITE" | Fuel_sub_type == "OILSHALE" | Fuel_sub_type == "OVENCOKE" | Fuel_sub_type == "PATFUEL" | Fuel_sub_type == "PEAT" | Fuel_sub_type == "PEATPROD" | Fuel_sub_type == "SUBCOAL", "Coal", 
+                       ifelse(Fuel_sub_type == "ELECTR", "Electricity", 
+                              ifelse(Fuel_sub_type == "NATGAS", "Natural gas",
+                                     ifelse(Fuel_sub_type == "ADDITIVE" | Fuel_sub_type == "AVGAS" | Fuel_sub_type == "BITUMEN" | Fuel_sub_type == "BLFURGS" | Fuel_sub_type == "COKEOVGS" | Fuel_sub_type == "CRNGFEED" | Fuel_sub_type == "CRUDEOIL" | Fuel_sub_type == "ETHANE" | Fuel_sub_type == "GASWKSGS" | Fuel_sub_type == "JETGAS" | Fuel_sub_type == "LPG" | Fuel_sub_type == "LUBRIC" | Fuel_sub_type == "NAPHTA" | Fuel_sub_type == "NGL" | Fuel_sub_type == "NONBIODIES" | Fuel_sub_type == "NONBIOGASO" | Fuel_sub_type == "NONBIOJETK" | Fuel_sub_type == "NONCRUDE" |  Fuel_sub_type == "ONONSPEC" | Fuel_sub_type == "OTHKERO" | Fuel_sub_type == "PARWAX" | Fuel_sub_type == "PETCOKE" | Fuel_sub_type == "REFFEEDS" | Fuel_sub_type == "REFINGAS" | Fuel_sub_type == "RESFUEL" | Fuel_sub_type == "WHITESP", "Petroleum products","")))))
+  z <- relocate(z, Fuel_type, .before = Fuel_sub_type)
+  
+  # Addition of the column "Scope of data reported"
+  z <- mutate(z, Scope_of_data_reported = "")
+  z <- relocate(z, Scope_of_data_reported, .after = Sources)
+  
+  # Modification of the column "Level"
+  z$Level[z$Level=="central"] <- "Central/Federal"
+  z$Level[z$Level=="CEN"] <- "Central/Federal"
+  z$Level[z$Level=="federal"] <- "Central/Federal"
+  z$Level[z$Level=="sub"] <- "Sub-national"
+  z$Level[z$Level=="both"] <- "Both"
+  
+  # Modification of the column "Recipients"
+  z$Recipients[z$Recipients=="CSE"] <- "Consumption"
+  z$Recipients[z$Recipients=="PSE"] <- "Production"
+  z$Recipients[z$Recipients=="GSSE"] <- "Both, consumption and production"
+  
+  # Modification of the column "Incidence"
+  z$Incidence[z$Incidence=="consumption"] <- "Direct Consumption"
+  z$Incidence[z$Incidence=="returns"] <- "Output Returns"
+  z$Incidence[z$Incidence=="income"] <- "Enterprise Income"
+  z$Incidence[z$Incidence=="inputs"] <- "Cost of Intermediate Inputs"
+  z$Incidence[z$Incidence=="labour"] <- "Labour"
+  z$Incidence[z$Incidence=="land"] <- "Land and natural resources"
+  z$Incidence[z$Incidence=="capital"] <- "Capital"
+  z$Incidence[z$Incidence=="knowledge"] <- "Knowledge"
+  
+  # Modification of the column "Current status"
+  z$Current_status[z$Current_status=="O"] <- "Ongoing"
+  z$Current_status[z$Current_status=="T"] <- "Terminated"
+  
+  return(z)
+}
+
+######################################################################################################################
+# STEP 5: Cleaning of the data
+######################################################################################################################
+
+clean <- function(z){
+  
+  # Removal of rows with "Terminated" status, annual cost between 2015 and "last_year" equal to 0 and end date not after (or in) 2015
+  z <- mutate(z, Test_to_keep = ifelse(z$Current_status == "Terminated" & z$"2015" == 0 & z$"2016" == 0 & z$"2017" == 0 & z$"2018" == 0 & z$"2019" == 0 & z$"2020" == 0 & !(z$"End_date">=2015), 0, 1))
+  if (years_to_add>=1){
+    for (a in 1:years_to_add){
+      z[, "Test_to_keep", drop = FALSE] = ifelse(z[, "Test_to_keep", drop = FALSE]== 0 & z[,ncol(z)-a, drop = FALSE]== 0, 0, 1)
+    }
+  }
+  z <- z[!(z$Test_to_keep == 0), , drop = FALSE]
+  
+  # Removal of empty rows
+  z <- z[!is.na(z$Program), , drop = FALSE]
+  
+  # Removal of Program (and Test_to_keep) columns
+  z <- subset(z, select = -c(Program, Test_to_keep))
+  
+  #Replacement of "0" by "" (except in years columns that contain the costs)
+  z[, c("Name_of_subsidy","Description_of_subsidy","Level","Sources","Scope_of_data_reported","Current_status","Start_date","End_date","Typology_Category","Typology_Sub_category","Fuel_type", "Fuel_sub_type","Recipients","Stage_of_support","Incidence","Comments","Currency")][z[, c("Name_of_subsidy","Description_of_subsidy","Level","Sources","Scope_of_data_reported","Current_status","Start_date","End_date","Typology_Category","Typology_Sub_category","Fuel_type", "Fuel_sub_type","Recipients","Stage_of_support","Incidence","Comments","Currency")] == 0 ] <- ""
+  
+  return(z)
+}
+
+######################################################################################################################
+# STEP 6: Applying the template formatting to the data
+######################################################################################################################
+
+format_and_save <- function(z){
+  
+  z <- as.data.frame(z)
+  template <- loadWorkbook(paste0(source,"SDG_template.xlsx"))
+  addDataFrame(z, getSheets(template)$"Reporting template", row.names = F, col.names = F, startRow = 8, startColumn = 3)
+  if(nrow(z)<=750){ #The SDG template file contains 750 rows in which measures can be added
+    saveWorkbook(template, file = paste0(output,country_code,"_prefilled_with_template_SDG.xlsx"))
+  }else{ # In that case, the number of measures exceed 750, and the content of the file is generated without the template
+    write.xlsx(z, paste0(output,country_code,"_prefilled_without_template_SDG.xlsx"), sheetName = "Reporting template", showNA = TRUE)
+  }
+  return(z)
+}
+
+######################################################################################################################
+# STEP 7: Loop to create the documents
+######################################################################################################################
+
+# Loop to run
+for (country_code in country_code_list) {
+  print(country_code)
+  y <- extract_outlays(country_code)
+  y_te <- extract_tax_expenditure(country_code)
+  z <- concatenate(y,y_te)
+  z <- clean(z)
+  z <- format_and_save(z)
+}
